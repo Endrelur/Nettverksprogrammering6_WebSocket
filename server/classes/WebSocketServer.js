@@ -35,13 +35,23 @@ class WebSocketServer {
      */
     static #generateServerReply(data) {
         let returnString = null;
-        if (WebSocketServer.#isHttp(data) && WebSocketServer.#isSocketUpgradeRequest(data)) {
-            //the server received a upgrade request.
-            console.log("WebSocketServer received a upgrade request: \n" + data.toString());
-            returnString = WebSocketServer.#generateHandshakeMsg(data);
+        if (WebSocketServer.#isHttp(data)) {
+            //the data received contains a http header.
+            if (WebSocketServer.#isSocketUpgradeRequest(data)) {
+                //the server received a upgrade request.
+                console.log("WebSocketServer received a upgrade request: \n" + data.toString());
+                returnString = WebSocketServer.#generateHandshakeMsg(data);
+            } else {
+                //some other HTTP header
+                console.log("WebSocketServer received a HTTP request:\n " + data.toString());
+            }
+
         } else {
             //the server received some other data.
-            console.log('The server received some data: \n' + data.toString());
+            let msg = WebSocketServer.#parseMessage(data);
+            console.log('The server received some data: \n' + msg);
+            returnString = WebSocketServer.#encodeReply('Hello from a WebSocket Server!');
+
         }
         return returnString;
     }
@@ -101,14 +111,53 @@ class WebSocketServer {
         });
         if (clientKey !== null) {
             msg =
-                'HTTP/1.1 101 Switching Protocols\n' +
-                'Upgrade: websocket\n' +
-                'Connection: Upgrade\n' +
-                'Sec-WebSocket-Accept: ' + generateServerKey(clientKey);
+                'HTTP/1.1 101 Switching Protocols\r\n' +
+                'Upgrade: websocket\r\n' +
+                'Connection: Upgrade\r\n' +
+                'Sec-WebSocket-Accept: ' + generateServerKey(clientKey) + '\r\n\r\n';
         }
         return msg;
 
+    }
 
+    static #parseMessage(buffer) {
+        let bytes = Buffer.from(buffer);
+        let length = bytes[1] & 127;
+        let maskStart = 2;
+        let dataStart = maskStart + 4;
+        let returnString = '';
+        for (let i = dataStart; i < dataStart + length; i++) {
+            let byte = bytes[i] ^ bytes[maskStart + ((i - dataStart) % 4)];
+            returnString += String.fromCharCode(byte);
+        }
+        return returnString;
+    }
+
+    /**
+     *
+     * @param string
+     * @returns {Buffer}
+     */
+    static #encodeReply(string) {
+        // Convert the data to JSON and copy it into a buffer
+        const json = JSON.stringify(string)
+        const jsonByteLength = Buffer.byteLength(json);
+        // Note: we're not supporting > 65535 byte payloads at this stage
+        const lengthByteCount = jsonByteLength < 126 ? 0 : 2;
+        const payloadLength = lengthByteCount === 0 ? jsonByteLength : 126;
+        const buffer = Buffer.alloc(2 + lengthByteCount + jsonByteLength);
+        // Write out the first byte, using opcode `1` to indicate that the message
+        // payload contains text data
+        buffer.writeUInt8(0b10000001, 0);
+        buffer.writeUInt8(payloadLength, 1);
+        // Write the length of the JSON payload to the second byte
+        let payloadOffset = 2;
+        if (lengthByteCount > 0) {
+            buffer.writeUInt16BE(jsonByteLength, 2); payloadOffset += lengthByteCount;
+        }
+        // Write the JSON data to the data buffer
+        buffer.write(json, payloadOffset);
+        return buffer;
     }
 }
 
